@@ -168,8 +168,8 @@ class YouTrackCmd(Cmd):
         print 'addissue project_id'
 
     def parse_draft_content(self, content):
-        summary = u''
-        description = u''
+        summary = ''
+        description = ''
         fields = {}
         mode = 0
         for line in content:
