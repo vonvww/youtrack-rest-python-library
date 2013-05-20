@@ -1,0 +1,205 @@
+#! /usr/bin/env python
+
+import sys
+import os
+import time
+import readline
+import rlcompleter
+from cmd import Cmd
+from youtrack.connection import Connection;
+import clint.textui
+from clint.textui import colored
+from clint.textui.cols import console_width
+import tempfile
+
+if sys.platform == 'darwin':
+    readline.parse_and_bind('bind ^I rl_complete')
+else:
+    readline.parse_and_bind('tab: complete')
+
+EDITOR=os.environ.get('EDITOR', 'vi')
+
+def unistr(s):
+    if isinstance(s, unicode):
+        s = s.encode('utf-8')
+    return s
+
+def puts(s, *args, **kwargs):
+    return clint.textui.puts(unistr(s), *args, **kwargs)
+
+def ftime(timestamp):
+    return time.strftime('%d %b %Y %T', time.localtime(int(timestamp) / 1000))
+
+
+class YouTrackCmd(Cmd):
+    
+    def __init__(self, *args, **kwargs):
+        Cmd.__init__(self, *args, **kwargs)
+        self.prompt = 'youtrack> '
+        self.last_shown_issue = None
+
+    def connect(self, url, login, password):
+        self.yt = Connection(url, login, password);
+
+    def emptyline(self):
+        pass
+
+    def onecmd(self, line):
+        try:
+            return Cmd.onecmd(self, line)
+        except Exception, e:
+            print e
+
+    def precmd(self, cmdline):
+        if cmdline == 'EOF':
+            cmdline = 'exit EOF'
+        return cmdline
+
+    def do_exit(self, arg):
+        if arg == 'EOF':
+            print ''
+        return True
+
+    def help_find(self):
+        print 'find [query]'
+
+    def do_find(self, arg):
+        import pydoc
+        il = u''
+        after = 0
+        chunk = 10
+        limit = 150
+        while True:
+            issues = self.yt.getIssues(None, arg, after, chunk)
+            for issue in issues:
+                il += u'#' + colored.green(issue.id.upper()) + u'  ' + issue.summary + u'\n'
+                after += 1
+                if after == limit:
+                    break
+            if len(issues) < chunk:
+                break
+            if after == limit:
+                break
+        else:
+            il = 'No issues found'
+        puts(il)
+        self.last_shown_issue = None
+
+    def complete_find(self, text, line, begidx, endidx):
+        suggestions = []
+        relevant = []
+        line = line[4:].rstrip()
+        for s in self.yt.getSearchIntelliSense(line, begidx).suggestions:
+            match = line[s['completion']['start']:s['completion']['end']].lower()
+            option = s['option']
+            if not (s['match']['start'] == 0 and option.lower().startswith(match)):
+                continue
+            if 'prefix' in s:
+                option = s['prefix'] + option
+            if 'suffix' in s:
+                option += s['suffix']
+            suggestions.append(option)
+        return suggestions
+
+    def help_show(self):
+        print 'show issue_id1 [issue_id2...]'
+
+    def do_show(self, issue_ids):
+        issues = [self.yt.getIssue(_id) for _id in issue_ids.split()]
+        for issue in issues:
+            puts(u'#' + colored.green(issue.id.upper()) + u'  ' + issue.summary + u'\n')
+            puts('Created by %s, %s' % (issue.reporterFullName, ftime(issue.created)))
+            if issue.updated:
+                puts('Updated by %s, %s' % (issue.updaterFullName, ftime(issue.updated)))
+            if hasattr(issue, 'description'):
+                puts(u'\n' + colored.blue('[Description]'))
+                puts(issue.description.strip())
+            cf = []
+            for attr in issue:
+                if attr in ('id', 'summary', 'description', 'numberInProject', 'commentsCount',
+                            'votes', 'created', 'updated', 'reporterFullName', 'updaterFullName',
+                            'reporterName', 'updaterName', 'resolved', 'projectShortName'):
+                    continue
+                value = issue[attr]
+                if isinstance(value, list):
+                    value = ', '.join(value)
+                cf.append((attr + u': ' +  value).encode('utf-8'))
+            puts(u'\n' + colored.blue('[Custom Fields]'))
+            self.columnize(cf, console_width())
+            puts('')
+            self.last_shown_issue = issue.id
+
+    def help_comments(self):
+        print 'comments issue_id1 [issue_id2 ...]'
+
+    def do_comments(self, issue_ids):
+        if not issue_ids:
+            issue_ids = self.last_shown_issue or ''
+        ids = [_id for _id in issue_ids.split()]
+        for _id in ids:
+            try:
+                comments = self.yt.getComments(_id)
+            except Exception:
+                pass
+            if comments:
+                puts('#' + colored.green(_id.upper()) + '\n')
+                for c in [c for c in comments if c.deleted.lower() != 'true']:
+                    puts('%s, %s' % (unistr(c.authorFullName), ftime(c.created)))
+                    puts(c.text.strip())
+                    puts('')
+
+    def help_addissue(self):
+        print 'addissue project_id'
+
+    def do_addissue(self, project_id):
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        tmp.write("\n\n")
+        tmp.write("# Please enter issue details\n")
+        tmp.write("# Lines starting with '#' will be ignored\n")
+        tmp.write("# FILE FORMAT:\n")
+        tmp.write("# First line contains issue summary\n")
+        tmp.write("# Description contains all next lines until empty line is present\n")
+        tmp.write("# Following lines are used for setting issue fields (one per line), format is NAME:VALUE\n")
+        tmp.close()
+        os.system(EDITOR + ' ' + tmp.name)
+        with open(tmp.name, 'r') as content_file:
+            content = [line for line in content_file.readlines() if not line.lstrip().startswith('#')]
+        summary = content[0].strip()
+        description = None
+        fields = {}
+        fields_start_idx = 1
+        for i, line in enumerate(content[1:]):
+            if not line.strip():
+                break
+            fields_start_idx += 1
+        description = ''.join(content[1:fields_start_idx]).strip()
+        if fields_start_idx < len(content):
+            for line in content[fields_start_idx:]:
+                fl = line.split(':')
+                if len(fl) > 1:
+                    fields[fl[0].strip()] = ':'.join(fl[1:]).strip()
+        self.yt.create_issue(project_id, summary, description, fields)
+        os.unlink(tmp.name)
+
+    def help_addcomment(self):
+        print 'addcomment issue_id'
+
+    def do_addcomment(self, issue_id):
+        tmp = tempfile.NamedTemporaryFile(delete=False)
+        tmp.write("\n\n")
+        tmp.write("# Please enter comment for issue " + issue_id + "\n")
+        tmp.write("# Lines starting with '#' will be ignored\n")
+        tmp.close()
+        os.system(EDITOR + ' ' + tmp.name)
+        with open(tmp.name, 'r') as content_file:
+            content = [line for line in content_file.readlines() if not line.lstrip().startswith('#')]
+        if content:
+            self.yt.executeCommand(issue_id, '', ''.join(content))
+        os.unlink(tmp.name)
+
+
+
+if __name__ == '__main__':
+    cmd = YouTrackCmd()
+    cmd.connect(sys.argv[1], sys.argv[2], sys.argv[3])
+    cmd.cmdloop('YouTrack command line interface 0.1')

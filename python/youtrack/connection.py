@@ -114,6 +114,14 @@ class Connection(object):
 
         return self._reqXml('PUT', '/issue?' + urllib.urlencode(params), '')
 
+    def create_issue(self, project, summary, description=None, fields=[]):
+        params = {'project': project, 'summary': summary}
+        if description is not None and len(description):
+            params['description'] = description
+        for k, v in fields.items():
+            params[k] = v
+        return self._reqXml('PUT', '/issue?' + urllib.urlencode(params), '')
+
     def get_changes_for_issue(self, issue):
         return [youtrack.IssueChange(change, self) for change in
                 self._get("/issue/%s/changes" % issue).getElementsByTagName('change')]
@@ -633,11 +641,12 @@ class Connection(object):
             urllib.urlencode(params))
 
     def getIssues(self, projectId, filter, after, max):
-        #response, content = self._req('GET', '/project/issues/' + urlquote(projectId) + "?" +
-        response, content = self._req('GET', '/issue/byproject/' + urlquote(projectId) + "?" +
-                                             urllib.urlencode({'after': str(after),
-                                                               'max': str(max),
-                                                               'filter': filter}))
+        url = '/issue/'
+        if projectId is not None and len(projectId):
+            url += '/byproject/' + urlquote(projectId)
+        url += '?' + urllib.urlencode({'after': str(after), 'max': str(max),
+                                       'filter': filter})
+        response, content = self._req('GET', url)
         xml = minidom.parseString(content)
         return [youtrack.Issue(e, self) for e in xml.documentElement.childNodes if e.nodeType == Node.ELEMENT_NODE]
 
