@@ -46,7 +46,9 @@ issue_draft_template = '''
 #   assignee: john.smith
 '''
 
-COMMENT_DRAFT_TEMPLATE = '''
+comment_draft_template = '''
+# Please, enter comment message above.
+# Lines starting with '#' will be ignored.
 '''
 
 
@@ -167,7 +169,7 @@ class YouTrackCmd(Cmd):
     def help_addissue(self):
         print 'addissue project_id'
 
-    def parse_draft_content(self, content):
+    def parse_issue_draft_content(self, content):
         summary = ''
         description = ''
         fields = {}
@@ -202,27 +204,43 @@ class YouTrackCmd(Cmd):
         os.system(editor + ' ' + tmp.name)
         with open(tmp.name, 'r') as content_file:
             content = [line for line in content_file.readlines() if not line.lstrip().startswith('#')]
-        summary, description, fields = self.parse_draft_content(content)
+        summary, description, fields = self.parse_issue_draft_content(content)
         if summary:
             self.yt.create_issue(project_id, summary, description, fields)
         os.unlink(tmp.name)
+
+    def parse_comment_draft_content(self, content):
+        start_idx = -1
+        end_idx = -1
+        for i, line in enumerate(content):
+            if line.strip():
+                if start_idx < 0:
+                    start_idx = i
+                else:
+                    end_idx = i
+        if start_idx < 0:
+            return
+        if end_idx < 0:
+            end_idx = start_idx
+        return ''.join(content[start_idx:end_idx + 1])
 
     def help_addcomment(self):
         print 'addcomment issue_id'
 
     def do_addcomment(self, issue_id):
+        if issue_id is None or not len(issue_id):
+            print 'You have to set IssueId'
+            return
         tmp = tempfile.NamedTemporaryFile(delete=False)
-        tmp.write("\n\n")
-        tmp.write("# Please enter comment for issue " + issue_id + "\n")
-        tmp.write("# Lines starting with '#' will be ignored\n")
+        tmp.write(comment_draft_template)
         tmp.close()
         os.system(editor + ' ' + tmp.name)
         with open(tmp.name, 'r') as content_file:
             content = [line for line in content_file.readlines() if not line.lstrip().startswith('#')]
-        if content:
-            self.yt.executeCommand(issue_id, '', ''.join(content))
+        message = self.parse_comment_draft_content(content)
+        if message:
+            self.yt.executeCommand(issue_id, 'comment', message)
         os.unlink(tmp.name)
-
 
 
 if __name__ == '__main__':
