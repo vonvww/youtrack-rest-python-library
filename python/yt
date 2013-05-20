@@ -17,8 +17,6 @@ if sys.platform == 'darwin':
 else:
     readline.parse_and_bind('tab: complete')
 
-EDITOR=os.environ.get('EDITOR', 'vi')
-
 def unistr(s):
     if isinstance(s, unicode):
         s = s.encode('utf-8')
@@ -31,15 +29,33 @@ def ftime(timestamp):
     return time.strftime('%d %b %Y %T', time.localtime(int(timestamp) / 1000))
 
 
+editor = os.environ.get('EDITOR', 'vi')
+
+issue_draft_template = '''
+# Please, enter issue details above.
+# Lines starting with '#' will be ignored.
+#
+# Example:
+#   First line contains issue summary
+#   Description begins on second line and continues until empty line is found.
+#   All following lines (after empty line) are used to set issue fields.
+#
+#   type: task
+#   priority: critical
+#   state: open
+#   assignee: john.smith
+'''
+
+COMMENT_DRAFT_TEMPLATE = '''
+'''
+
+
 class YouTrackCmd(Cmd):
-    
-    def __init__(self, *args, **kwargs):
-        Cmd.__init__(self, *args, **kwargs)
+    def __init__(self, url, login, password):
+        Cmd.__init__(self)
         self.prompt = 'youtrack> '
         self.last_shown_issue = None
-
-    def connect(self, url, login, password):
-        self.yt = Connection(url, login, password);
+        self.yt = Connection(url, login, password)
 
     def emptyline(self):
         pass
@@ -151,34 +167,44 @@ class YouTrackCmd(Cmd):
     def help_addissue(self):
         print 'addissue project_id'
 
+    def parse_draft_content(self, content):
+        summary = u''
+        description = u''
+        fields = {}
+        mode = 0
+        for line in content:
+            if mode == 0:
+                summary = line.strip()
+                if summary:
+                    mode = 1
+            elif mode == 1:
+                if line.strip():
+                    description += line
+                else:
+                    mode = 2
+            elif mode == 2:
+                fld = []
+                for s in line.split(':', 1):
+                    s = s.strip()
+                    if s:
+                        fld.append(s)
+                if len(fld) == 2:
+                    fields[fld[0].lower()] = fld[1]
+        return (summary, description, fields)
+
     def do_addissue(self, project_id):
+        if project_id is None or not len(project_id):
+            print 'You have to set ProjectId'
+            return
         tmp = tempfile.NamedTemporaryFile(delete=False)
-        tmp.write("\n\n")
-        tmp.write("# Please enter issue details\n")
-        tmp.write("# Lines starting with '#' will be ignored\n")
-        tmp.write("# FILE FORMAT:\n")
-        tmp.write("# First line contains issue summary\n")
-        tmp.write("# Description contains all next lines until empty line is present\n")
-        tmp.write("# Following lines are used for setting issue fields (one per line), format is NAME:VALUE\n")
+        tmp.write(issue_draft_template)
         tmp.close()
-        os.system(EDITOR + ' ' + tmp.name)
+        os.system(editor + ' ' + tmp.name)
         with open(tmp.name, 'r') as content_file:
             content = [line for line in content_file.readlines() if not line.lstrip().startswith('#')]
-        summary = content[0].strip()
-        description = None
-        fields = {}
-        fields_start_idx = 1
-        for i, line in enumerate(content[1:]):
-            if not line.strip():
-                break
-            fields_start_idx += 1
-        description = ''.join(content[1:fields_start_idx]).strip()
-        if fields_start_idx < len(content):
-            for line in content[fields_start_idx:]:
-                fl = line.split(':')
-                if len(fl) > 1:
-                    fields[fl[0].strip()] = ':'.join(fl[1:]).strip()
-        self.yt.create_issue(project_id, summary, description, fields)
+        summary, description, fields = self.parse_draft_content(content)
+        if summary:
+            self.yt.create_issue(project_id, summary, description, fields)
         os.unlink(tmp.name)
 
     def help_addcomment(self):
@@ -190,7 +216,7 @@ class YouTrackCmd(Cmd):
         tmp.write("# Please enter comment for issue " + issue_id + "\n")
         tmp.write("# Lines starting with '#' will be ignored\n")
         tmp.close()
-        os.system(EDITOR + ' ' + tmp.name)
+        os.system(editor + ' ' + tmp.name)
         with open(tmp.name, 'r') as content_file:
             content = [line for line in content_file.readlines() if not line.lstrip().startswith('#')]
         if content:
@@ -200,6 +226,5 @@ class YouTrackCmd(Cmd):
 
 
 if __name__ == '__main__':
-    cmd = YouTrackCmd()
-    cmd.connect(sys.argv[1], sys.argv[2], sys.argv[3])
+    cmd = YouTrackCmd(sys.argv[1], sys.argv[2], sys.argv[3])
     cmd.cmdloop('YouTrack command line interface 0.1')
