@@ -202,8 +202,15 @@ def main(args):
             cc = args[7]
             sendMail(sprint, receivers, cc, '执行时间: '+ date,path + sprint + '.csv')
     else:
-        print 'Not at execute date:'
-        print args
+        user = args[2]
+        pwd = args[3]
+        query = args[4]
+        sprint = args[5]
+        exportCSV(user, pwd, query, sprint)
+        if len(args) == 8:
+            receivers = args[6]
+            cc = args[7]
+            sendMail(sprint + datetime, receivers, cc, '执行时间: '+ date,path + sprint + '.csv')
 
 
 if __name__ == '__main__':
