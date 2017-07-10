@@ -1,0 +1,15 @@
+[conf]
+user = wangwei
+pwd = oaABC123!
+sprint_dev = core-1704b
+sprint_test = 1704a
+
+date_dev = 2017-05-05
+date_test = 2017-05-04
+mail_dev = wangwei@propersoft.cn
+mail_test = wangwei@propersoft.cn
+cc = wangwei@propersoft.cn
+smtp_user = gdpr@propersoft.cn
+smtp_pwd = 31353260Gdpr
+
+path = E:\Python\test\
