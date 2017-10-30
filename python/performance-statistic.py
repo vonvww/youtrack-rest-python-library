@@ -1,176 +1,174 @@
 # coding=UTF-8
 
 from __future__ import division
-from youtrack.connection import Connection
-import string
-import sys
+from __future__ import print_function
+from __future__ import print_function
+
 import codecs
 import csv
-from datetime import datetime
-import email, os
+import os
 import smtplib
-from email.MIMEText import MIMEText
+import string
+import sys
+from datetime import datetime
+
 from email.MIMEMultipart import MIMEMultipart
+from email.MIMEText import MIMEText
+
+from youtrack.connection import Connection
 
 reload(sys)
 sys.setdefaultencoding('utf-8')
 
 now = datetime.now()
 date = now.strftime('%Y-%m-%d %H:%M:%S')
-path = 'E:\Python\performance'
-def exportCSV(user, pwd, query, sprint, isFinal):
+path = 'E:\Python\performance/'
+
+# 任务类型因子
+factor_type_design = 1.5
+factor_type_implement = 1.0
+factor_type_check = 0.5
+# 效率因子
+factor_efficiency_delays = 0.1
+# 质量因子
+factor_quality_rejects = 0.1
+
+
+def create_result_dic_element():
+    return {
+        'performance_result': 0,  # 绩效结果
+        # 'verified_issues': [],      # 所有已验证任务集合
+        # 'all_issues': [],           # 所有任务集合
+        'spend_times': 0,  # 总工时
+        'compute_details': '',  # 计算明细
+        'all_records': ''  # 记录明细
+    }
+
+
+def compute_performance_result(estimation, issue_type, delays, rejects):
+    delays = float(delays)
+    rejects = float(rejects)
+    if issue_type == 'Design':
+        factor_type = factor_type_design
+    elif issue_type == 'Implement':
+        factor_type = factor_type_implement
+    else:
+        factor_type = factor_type_check
+
+    if delays > 0:
+        factor_efficiency = 1.0 - delays * factor_efficiency_delays
+        factor_efficiency = factor_efficiency if factor_efficiency > 0 else 0
+    else:
+        factor_efficiency = 1.0
+
+    if rejects > 0:
+        factor_quality = 1.0 - rejects * factor_quality_rejects
+        factor_quality = factor_quality if factor_quality > 0 else 0
+    else:
+        factor_quality = 1.0
+
+    result = estimation * factor_type * factor_efficiency * factor_quality
+    return result
+
+
+def fill_performance_result(dic, issue_id, estimation, issue_type, delays, rejects):
+    performance_result = compute_performance_result(estimation, issue_type, delays, rejects)
+    dic['performance_result'] += performance_result
+    dic['compute_details'] += issue_id + ':' + str(performance_result) \
+        + '(estimation: ' + str(estimation) + ', type: ' + issue_type + ', delays: ' \
+        + str(delays) + ', rejects: ' + str(rejects) + '),'
+
+
+def get_performance_result_dic(user, pwd, query, sprint):
     yt = Connection('https://cloud.propersoft.cn/youtrack', user, pwd)
-    print 'connected'
-    print sprint
+    print('connected')
+    print(sprint)
 
-    with open(path + sprint + '.csv', 'wb') as csvfile:
-        csvfile.write(codecs.BOM_UTF8)
-        spamwriter = csv.writer(csvfile, dialect='excel')
-        if isFinal:
-            spamwriter.writerow(
-                ['sprint'] + ['姓名'] + ['绩效点数'] + 
-                ['调整值'] + ['调整原因'] + ['达成主要目标'] + ['达成次要目标'] + ['其他目标达成率'] + ['惩罚'] + ['奖励'] +
-                ['验证工时(分钟)'] + ['总工时(分钟)'] + ['计算明细'] + ['记录明细'])
+    # 每人绩效结果字典，key 为用户名，value 为 create_result_dic_element 方法创建的属性字典。
+    result_dic = {}
+
+    all_issues = yt.getAllIssues(query)
+    for issue in all_issues:
+        if not hasattr(issue, 'Assignee'):
+            continue
+
+        # 任务责任人
+        assignee = issue.Assignee
+        if assignee not in result_dic:
+            result_dic[assignee] = create_result_dic_element()
+
+        # 评估工时
+        if hasattr(issue, 'Estimation'):
+            estimation = string.atoi(issue.Estimation)
         else:
-            spamwriter.writerow(
-                ['sprint'] + ['姓名'] + ['绩效点数'] + 
-                ['验证工时(分钟)'] + ['总工时(分钟)'] + ['计算明细'] + ['记录明细'])
-        allissue = yt.getAllIssues(query)
-        verified = yt.getAllIssues('#Verified ' + query)
-        statdic = {}
+            estimation = 0
 
-        class Counter(dict):
-            def __missing__(self, key):
-                return None
+        issue_type = issue.Type
+        delays = issue.Delays if hasattr(issue, 'Delays') else 0
+        rejects = issue.Rejects if hasattr(issue, 'Rejects') else 0
 
-        c = Counter(statdic)
-        detailDic = {}
+        items = yt.getWorkItems(issue.id)
+        # 每个任务下每人实际工时字典
+        author_duration_dic = {}
+        for item in items:
+            if item.authorLogin not in result_dic:
+                result_dic[item.authorLogin] = create_result_dic_element()
 
-        for issue in verified:
-            if hasattr(issue, 'Estimation'):
-                es = string.atoi(issue.Estimation)
+            result_dic[item.authorLogin]['spend_times'] += string.atoi(item.duration)
+
+            desc = item.description if hasattr(item, 'description') else ''
+            time_stamp = string.atoi(item.date) / 1000
+            date_array = datetime.fromtimestamp(time_stamp)
+            item_date = date_array.strftime("%Y-%m-%d")
+            result_dic[item.authorLogin][
+                'all_records'] += issue.id + ' ' + item_date + ' ' + desc + ' ' + item.duration + ';'
+
+            author_duration_dic[item.authorLogin] = string.atoi(item.duration)
+
+        if issue.State == 'Verified':
+            authors = author_duration_dic.keys()
+            if len(authors) == 0:
+                # 任务未填写实际工时，工作量直接计算到任务负责人头上
+                fill_performance_result(result_dic[assignee], issue.id, estimation, issue_type, delays, rejects)
+            elif len(authors) == 1:
+                # 仅一人填写实际工时，工作量计算到填写人头上
+                fill_performance_result(result_dic[authors[0]], issue.id, estimation, issue_type, delays, rejects)
             else:
-                es = 0
+                # 多人协作任务工作量分配
+                total = sum(author_duration_dic.values())
+                for author in authors:
+                    fill_performance_result(result_dic[author], issue.id,
+                                            estimation * author_duration_dic[author] / total,
+                                            issue_type, delays, rejects)
 
-            items = yt.getWorkItems(issue.id)
+    return result_dic
 
-            ttdic = {}
-            for item in items:
-                if ttdic.has_key(item.authorLogin):
-                    ttdic[item.authorLogin] = ttdic[item.authorLogin] + string.atoi(item.duration)
-                else:
-                    ttdic[item.authorLogin] = string.atoi(item.duration)
-                des = item.description if hasattr(item, 'description') else ''
-                timeStamp = string.atoi(item.date) / 1000
-                dateArray = datetime.fromtimestamp(timeStamp)
-                itemDate = dateArray.strftime("%Y-%m-%d")
-                if detailDic.has_key(item.authorLogin):
-                    detailDic[item.authorLogin] += issue.id + ' ' + itemDate + ' ' + des + ' ' + item.duration + ';'
-                else:
-                    detailDic[item.authorLogin] = issue.id + ' ' + itemDate + ' ' + des + ' ' + item.duration + ';'
 
-            keys = ttdic.keys()
-            if len(keys) == 0:
-                des = issue.Assignee if hasattr(issue, 'Assignee') else ''
-                if not c.has_key(des):
-                    c[des] = {}
-                c[des][issue.id] = es
-            elif len(keys) == 1:
-                if not c.has_key(keys[0]):
-                    c[keys[0]] = {}
-                c[keys[0]][issue.id] = es
-            else:
-                total = sum(ttdic.values())
-                for k in keys:
-                    if not c.has_key(k):
-                        c[k] = {}
-                    c[k][issue.id] = es * ttdic[k] / total
+def export_csv(sprint, result_dic):
+    with open(path + sprint + '.csv', 'wb') as csv_file:
+        csv_file.write(codecs.BOM_UTF8)
+        spam_writer = csv.writer(csv_file)
+        spam_writer.writerow(['sprint'] + ['姓名'] + ['绩效点数'] + ['总工时(分钟)'] + ['计算明细'] + ['记录明细'])
 
-        sstatdic = {}
-        sdetailDic = {}
-        duration = {}
-        for issue in allissue:
-            if hasattr(issue, 'Estimation'):
-                es = string.atoi(issue.Estimation)
-            else:
-                es = 0
+        for assignee in result_dic.keys():
+            performance_result = str(round(result_dic[assignee]['performance_result'] / 8 / 60, 2))
+            spend_times = str(result_dic[assignee]['spend_times'])
+            compute_details = result_dic[assignee]['compute_details']
+            all_records = result_dic[assignee]['all_records']
+            spam_writer.writerow([sprint, assignee, performance_result, spend_times, compute_details, all_records])
 
-            items = yt.getWorkItems(issue.id)
 
-            sttdic = {}
-            for item in items:
-                if sttdic.has_key(item.authorLogin):
-                    sttdic[item.authorLogin] = sttdic[item.authorLogin] + string.atoi(item.duration)
-                else:
-                    sttdic[item.authorLogin] = string.atoi(item.duration)
-                des = item.description if hasattr(item, 'description') else ''
-                timeStamp = string.atoi(item.date) / 1000
-                dateArray = datetime.fromtimestamp(timeStamp)
-                itemDate = dateArray.strftime("%Y-%m-%d %H:%M:%S")
-
-                if duration.has_key(item.authorLogin):
-                    duration[item.authorLogin] += string.atoi(item.duration)
-                else:
-                    duration[item.authorLogin] = string.atoi(item.duration)
-
-                if sdetailDic.has_key(item.authorLogin):
-                    sdetailDic[item.authorLogin] += issue.id + ' ' + itemDate + ' ' + des + ' ' + item.duration + ';'
-                else:
-                    sdetailDic[item.authorLogin] = issue.id + ' ' + itemDate + ' ' + des + ' ' + item.duration + ';'
-
-            skeys = sttdic.keys()
-            if len(skeys) == 0:
-                des = issue.Assignee if hasattr(issue, 'Assignee') else ''
-                if not sstatdic.has_key(des):
-                    sstatdic[des] = {}
-                sstatdic[des][issue.id] = es
-            elif len(skeys) == 1:
-                if not sstatdic.has_key(skeys[0]):
-                    sstatdic[skeys[0]] = {}
-                sstatdic[skeys[0]][issue.id] = es
-            else:
-                total = sum(sttdic.values())
-                for k in skeys:
-                    if not sstatdic.has_key(k):
-                        sstatdic[k] = {}
-                    sstatdic[k][issue.id] = es * sttdic[k] / total
-
-        for assignee in sstatdic:
-            if assignee == '':
-                continue
-            s = 0
-            ss = 0
-            list = []
-            tasks = ''
-            for issue in sstatdic[assignee].keys():
-                tt = duration[assignee] if duration.has_key(assignee) else '0'
-            ssh = tt
-            des = c[assignee].keys() if (c.has_key(assignee)) else ''
-            for issue in des:
-                list.append('%s%s%i%s' % (issue, ':', (c[assignee][issue]), ', '))
-                tasks = ''.join(list)
-                s += c[assignee][issue]
-            sd = str(round(s / 60 / 8, 2))
-            sh = str(round(s, 2))
-            detail = detailDic[assignee] if detailDic.has_key(assignee) else ''
-            if isFinal:
-                spamwriter.writerow([sprint, assignee, sd, '', '', 1, 1, 0, '', '', sh, ssh, tasks, detail])
-            else:
-                spamwriter.writerow([sprint, assignee, sd, sh, ssh, tasks, detail])
-        if isFinal:
-            spamwriter.writerow(['', '惩罚线', '8', '奖励线', '11.5', '标准工时', '4800', '', '', '', '', '', '', ''])
-
-def sendMail(subject, receivers, cc, content, atts):
-    SENDER = 'gdpr@propersoft.cn'
+def send_mail(subject, receivers, cc, content, atts):
+    sender = 'gdpr@propersoft.cn'
     msg = MIMEMultipart('related')
     msg['Subject'] = unicode(subject, "UTF-8")
-    msg['From'] = SENDER
+    msg['From'] = sender
     msg['To'] = receivers
     msg['Cc'] = cc
 
     # 邮件内容
     if os.path.isfile(content):
-        if (content.split('.')[-1] == 'html'):
+        if content.split('.')[-1] == 'html':
             cont = MIMEText(open(content).read(), 'html', 'utf-8')
         else:
             cont = MIMEText(open(content).read(), 'plain', 'utf-8')
@@ -191,35 +189,33 @@ def sendMail(subject, receivers, cc, content, atts):
     smtp = smtplib.SMTP_SSL('smtp.exmail.qq.com', port=465)
     smtp.login('gdpr@propersoft.cn', '31353260Gdpr')
     for recev in receivers.split(','):
-        smtp.sendmail(SENDER, recev, msg.as_string())
+        smtp.sendmail(sender, recev, msg.as_string())
     if cc != '':
         for c in cc.split(','):
-            smtp.sendmail(SENDER, c, msg.as_string())
+            smtp.sendmail(sender, c, msg.as_string())
     smtp.close()
 
 
-# python performance-statistic.py 2017-03-26 xxx xxx '#core-1703a' core-1703a 'hexin@propersoft.cn, gdpr@propersoft.cn' hexin@propersoft.cn
+# python performance-statistic-v2.py 2017-10-17 xxx xxx '#core-1703a' core-1703a 'a@p.cn, b@p.cn' a@p.cn
 def main(args):
-    execdate = args[1]
+    exec_date = args[1]
     user = args[2]
     pwd = args[3]
     query = args[4]
     sprint = args[5]
 
-    isFinal = False
-    subject = ''
     today = datetime.now().strftime('%Y-%m-%d')
-    if today == execdate:
-        isFinal = True
+    if today == exec_date:
         subject = sprint + ' 本轮统计结果'
     else:
         subject = '每日统计  ' + sprint + '_' + today
 
-    exportCSV(user, pwd, query, sprint, isFinal)
+    result_dic = get_performance_result_dic(user, pwd, query, sprint)
+    export_csv(sprint, result_dic)
     if len(args) == 8:
         receivers = args[6]
         cc = args[7]
-        sendMail(subject, receivers, cc, '执行时间: '+ date,path + sprint + '.csv')
+        send_mail(subject, receivers, cc, '执行时间: ' + date, path + sprint + '.csv')
 
 
 if __name__ == '__main__':
